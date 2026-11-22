@@ -100,6 +100,8 @@ pub struct MediaCard {
     pub show_lyrics: bool,
     /// Pinned: the card stays open until the pin or the pill is pressed.
     pub pinned: bool,
+    /// Repeat is on for the one track, not the list (drawn with its own icon).
+    pub repeat_one: bool,
 }
 
 /// The lyric lines around the position: the one before (dim), the one on, the next (dim), and
@@ -192,7 +194,7 @@ fn output_icon(kind: OutputKind, earbuds: bool) -> Icon {
 impl MediaCard {
     pub fn new(m: MediaSnapshot, now_filetime: i64, output: Option<String>, seeking: Option<f32>, pages: (usize, usize), hold: Option<SeekHold>) -> Self {
         let position = m.timeline.as_ref().and_then(|t| shown_position(t, hold, now_filetime));
-        MediaCard { m, position, output, seeking, pages, page: MediaPage::Player, lyrics: None, show_lyrics: false, pinned: false }
+        MediaCard { m, position, output, seeking, pages, page: MediaPage::Player, lyrics: None, show_lyrics: false, pinned: false, repeat_one: false }
     }
 }
 
@@ -2459,15 +2461,21 @@ impl Painter<'_, '_> {
             self.ink.text(&glyph(icon).to_string(), area, &st)?;
             self.hits.push((area, action));
         }
+        // On: a filled circle in the cover's colour with the icon in dark or white on it, the
+        // way the play button reads; off: the bare icon.
+        let (lr, lg, lb) = (ar.max(90), ag.max(90), ab.max(90));
+        let on_light = 299 * lr as u32 + 587 * lg as u32 + 114 * lb as u32 > 150_000;
+        let repeat_icon = if card.repeat_one { Icon::RepeatOne } else { Icon::Repeat };
         for (x, icon, supported, active, action) in [
             (32.0, Icon::Shuffle, m.can.shuffle, m.shuffle == Some(true), CardAction::Shuffle),
-            (w_dip - 32.0, Icon::Repeat, m.can.repeat, m.repeat == Some(true), CardAction::Repeat),
+            (w_dip - 32.0, repeat_icon, m.can.repeat, m.repeat == Some(true), CardAction::Repeat),
         ] {
             let area = rect(d(x - 20.0), cy - d(20.0), d(40.0), d(40.0));
             let tint = if !supported {
                 white(0.35)
             } else if active {
-                rgba(ar.max(90), ag.max(90), ab.max(90), 1.0)
+                self.ink.rrect(area, d(20.0), rgba(lr, lg, lb, 1.0))?;
+                if on_light { rgba(0x12, 0x12, 0x12, 1.0) } else { white(1.0) }
             } else {
                 white(0.85)
             };

@@ -15,6 +15,11 @@ pub fn get_text(url: &str) -> Result<String, String> {
 
 /// GETs `url` with extra request `headers` (redirects followed): the status and the body.
 pub fn get_bytes(url: &str, headers: &[(&str, &str)]) -> Result<(u32, Vec<u8>), String> {
+    request("GET", url, headers, &[])
+}
+
+/// Sends `method` to `url` with extra `headers` and a `body` (POST, PUT): the status and the body.
+pub fn request(method: &str, url: &str, headers: &[(&str, &str)], body: &[u8]) -> Result<(u32, Vec<u8>), String> {
     let wide: Vec<u16> = url.encode_utf16().collect();
     // Null pointers with non-zero lengths: the parts point into `wide` itself, where the path and
     // the query follow each other.
@@ -45,12 +50,13 @@ pub fn get_bytes(url: &str, headers: &[(&str, &str)]) -> Result<(u32, Vec<u8>), 
             return Err(format!("WinHttpConnect: {:?}", windows::core::Error::from_thread()));
         }
         let secure = if parts.nScheme == WINHTTP_INTERNET_SCHEME_HTTPS { WINHTTP_FLAG_SECURE } else { WINHTTP_OPEN_REQUEST_FLAGS(0) };
-        let request = Handle(WinHttpOpenRequest(connect.0, &HSTRING::from("GET"), &HSTRING::from(rest), PCWSTR::null(), PCWSTR::null(), std::ptr::null(), secure));
+        let request = Handle(WinHttpOpenRequest(connect.0, &HSTRING::from(method), &HSTRING::from(rest), PCWSTR::null(), PCWSTR::null(), std::ptr::null(), secure));
         if request.0.is_null() {
             return Err(format!("WinHttpOpenRequest: {:?}", windows::core::Error::from_thread()));
         }
         let extra: Vec<u16> = headers.iter().map(|(k, v)| format!("{k}: {v}\r\n")).collect::<String>().encode_utf16().collect();
-        WinHttpSendRequest(request.0, (!extra.is_empty()).then_some(&extra[..]), None, 0, 0, 0).map_err(|e| format!("send: {e:?}"))?;
+        let data = (!body.is_empty()).then_some(body.as_ptr() as *const core::ffi::c_void);
+        WinHttpSendRequest(request.0, (!extra.is_empty()).then_some(&extra[..]), data, body.len() as u32, body.len() as u32, 0).map_err(|e| format!("send: {e:?}"))?;
         WinHttpReceiveResponse(request.0, std::ptr::null_mut()).map_err(|e| format!("receive: {e:?}"))?;
         let mut status = 0u32;
         let mut size = 4u32;

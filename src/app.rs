@@ -36,6 +36,7 @@ use crate::activities::football_worker::FootballWorker;
 use crate::activities::basketball_worker::BasketballWorker;
 use crate::activities::media::{seek_position, MediaCommand, MediaSnapshot, SeekHold};
 use crate::activities::media_worker::{filetime_now, MediaWorker};
+use crate::activities::spotify;
 use crate::activities::lyrics::{self, line_at, Lines};
 use crate::activities::lyrics_worker::{LyricsMailbox, LyricsWorker, Track};
 use crate::activities::power::{power_moment, PowerMoment, POWER_MOMENT_MS};
@@ -1893,6 +1894,12 @@ impl App {
             OpenCard::Activity(kind @ ActivityKind::Media(id)) => self.media_of(id).cloned().map(styled).map(|m| {
                 let hold = self.seek_hold.filter(|(held, _)| *held == id).map(|(_, h)| h);
                 let mut card = MediaCard::new(m, filetime_now(), self.output_name.clone(), self.seeking, self.page_of(kind), hold);
+                // Windows doesn't tell Spotify's shuffle and repeat: the Web API's answer does.
+                if let (true, Some(p)) = (spotify::is_spotify(&card.m.app_id), spotify::player()) {
+                    card.m.shuffle = Some(p.shuffle);
+                    card.m.repeat = Some(p.repeat != spotify::Repeat::Off);
+                    card.repeat_one = p.repeat == spotify::Repeat::One;
+                }
                 card.lyrics = self.lyrics_view(&card);
                 card.show_lyrics = self.show_lyrics;
                 card.pinned = self.card_pinned;
@@ -2961,6 +2968,16 @@ impl App {
             CardAction::PlayPause => return self.media_command(MediaCommand::PlayPause),
             CardAction::Prev => return self.media_command(MediaCommand::Prev),
             CardAction::Next => return self.media_command(MediaCommand::Next),
+            // Spotify's desktop app ignores these two over Windows' media session: its Web API
+            // does them (the first press opens the login).
+            CardAction::Shuffle if self.media_is_spotify() => {
+                spotify::run(spotify::toggle_shuffle);
+                return Ok(());
+            }
+            CardAction::Repeat if self.media_is_spotify() => {
+                spotify::run(spotify::cycle_repeat);
+                return Ok(());
+            }
             CardAction::Shuffle => return self.media_command(MediaCommand::ToggleShuffle),
             CardAction::Repeat => return self.media_command(MediaCommand::CycleRepeat),
             CardAction::OutputDevice => return self.turn_page(true),
@@ -3462,6 +3479,11 @@ impl App {
             (Some(OpenCard::Activity(ActivityKind::Media(id))), _) | (_, Some(ActivityKind::Media(id))) => Some(id),
             _ => None,
         }
+    }
+
+    /// Whether the media the buttons act on is the Spotify desktop app.
+    fn media_is_spotify(&self) -> bool {
+        self.media_target().and_then(|id| self.media_of(id)).is_some_and(|m| spotify::is_spotify(&m.app_id))
     }
 
     fn media_command(&mut self, c: MediaCommand) -> Result<()> {
@@ -4014,6 +4036,11 @@ impl App {
             return Ok(());
         }
         let Some(content) = self.card_content(which, now_ms()) else { return Ok(()) };
+        // Spotify's shuffle and repeat, as they are now (nothing happens until the user has
+        // connected; the card follows when the answer comes).
+        if matches!(&content, CardContent::Media(c) if spotify::is_spotify(&c.m.app_id)) {
+            spotify::run(spotify::sync);
+        }
         let s = self.ui.card_scale;
         let pill = self.pill_screen();
         // The pill may have moved aside for the taskbar's buttons since the window was made.
@@ -4279,7 +4306,11 @@ impl App {
                 }
                 None => Ok(()),
             },
-            UiEvent::Media => self.take_media(),
+            UiEvent::Media => {
+                self.take_media()?;
+                // Also the wake-up of a finished Spotify call: the card shows its answer.
+                self.refresh()
+            }
             UiEvent::Buds => self.take_buds(),
             UiEvent::Matches => self.take_matches(),
             UiEvent::OutputChanged => {
