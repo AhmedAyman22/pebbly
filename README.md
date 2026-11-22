@@ -7,11 +7,11 @@
 **Görev çubuğunda canlı etkinlikler.**<br>
 Samsung One UI'daki Now Bar'dan esinlenen, Windows 11 ve 10 için küçük bir pil.
 
-[![Son sürüm](https://img.shields.io/github/v/release/nixesty/pebbly?style=flat-square&label=s%C3%BCr%C3%BCm&labelColor=201E1C&color=F4A301)](https://github.com/nixesty/pebbly/releases/latest)
+[![Son sürüm](https://img.shields.io/github/v/release/AhmedAyman22/pebbly?style=flat-square&label=s%C3%BCr%C3%BCm&labelColor=201E1C&color=F4A301)](https://github.com/AhmedAyman22/pebbly/releases/latest)
 [![Windows 11 ve 10](https://img.shields.io/badge/Windows-11%20%C2%B7%2010-4A4540?style=flat-square&labelColor=201E1C)](#bilinen-sınırlar)
 [![Lisans: GPL-3.0](https://img.shields.io/badge/lisans-GPL--3.0-4A4540?style=flat-square&labelColor=201E1C)](LICENSE)
 
-**[İndir](https://github.com/nixesty/pebbly/releases/latest)** &nbsp;·&nbsp;
+**[İndir](https://github.com/AhmedAyman22/pebbly/releases/latest)** &nbsp;·&nbsp;
 [pebbly.bar](https://pebbly.bar) &nbsp;·&nbsp;
 [English](README.en.md)
 
@@ -20,6 +20,21 @@ Samsung One UI'daki Now Bar'dan esinlenen, Windows 11 ve 10 için küçük bir p
 <img src="assets/readme/hero.png" width="880" alt="Görev çubuğunda çalan şarkının pili, üstünde açılmış müzik kartı; yanında Claude Code, maç, zamanlayıcı, Galaxy Buds, hava ve şarj pilleri">
 
 </div>
+
+> [!NOTE]
+> **Bu, [nixesty](https://github.com/nixesty) tarafından yapılan [Pebbly](https://github.com/nixesty/pebbly)'nin değiştirilmiş bir sürümüdür.**
+> Asıl uygulamanın tüm emeği ona aittir. Bu çatal (fork) [AhmedAyman22](https://github.com/AhmedAyman22)
+> tarafından sürdürülür; asıl geliştiriciyle bağlantılı değildir ve onun onayını taşımaz. Bu
+> sürümdeki hataları buraya bildir, asıl projeye değil.
+>
+> Bu çataldaki değişiklikler (Kasım 2026'dan beri):
+> - Pil, Dynamic Island gibi ekranın üst ortasında süzülür; imleç üst kenarda bekleyince aşağı iner
+> - Bir medya ya da Claude Code kartına tıklamak o uygulamanın penceresini öne getirir
+> - Spotify'ın karıştır ve tekrarla düğmeleri Spotify Web API ile çalışır (tek şarkıyı tekrar dahil)
+> - Daha geniş ve daha kısa bir medya kartı
+>
+> Bu sürümün güncellemeleri [bu çatalın sürümlerinden](https://github.com/AhmedAyman22/pebbly/releases) gelir.
+
 
 <br>
 
@@ -99,7 +114,7 @@ Windows'un dili).
 
 <img src="assets/readme/setup.png" width="440" align="right" alt="Kurulum penceresi">
 
-1. [Son sürümden](https://github.com/nixesty/pebbly/releases/latest) `pebbly-setup.exe`'yi indir.
+1. [Son sürümden](https://github.com/AhmedAyman22/pebbly/releases/latest) `pebbly-setup.exe`'yi indir.
 2. Çalıştır. Yönetici izni istemez; `%LOCALAPPDATA%\Programs\Pebbly` klasörüne kurulur
    (**Değiştir** ile başka bir klasör seçilir).
 3. Seçenekler: **Windows'la başlat**, **Claude Code'a bağlan** (Claude Code varsa görünür),
@@ -319,7 +334,8 @@ taşır. Her sürümde bulunmaları gerekir.
 
 Pebbly, [GNU Genel Kamu Lisansı sürüm 3](LICENSE) (GPL-3.0) ile lisanslıdır: kodu kullanabilir,
 değiştirebilir ve dağıtabilirsin; değiştirip dağıttığın sürümün kaynak kodunu da aynı lisansla
-açman gerekir. Telif hakkı © 2026 nixesty.
+açman gerekir. Telif hakkı © 2026 nixesty. Bu çataldaki değişiklikler: Telif hakkı © 2026
+AhmedAyman22, aynı lisansla.
 
 Bu lisansın dışında kalanlar:
 

@@ -7,11 +7,11 @@
 **Live activities in the taskbar.**<br>
 A small pill for Windows 11 and 10, inspired by Samsung One UI's Now Bar.
 
-[![Latest release](https://img.shields.io/github/v/release/nixesty/pebbly?style=flat-square&label=release&labelColor=201E1C&color=F4A301)](https://github.com/nixesty/pebbly/releases/latest)
+[![Latest release](https://img.shields.io/github/v/release/AhmedAyman22/pebbly?style=flat-square&label=release&labelColor=201E1C&color=F4A301)](https://github.com/AhmedAyman22/pebbly/releases/latest)
 [![Windows 11 and 10](https://img.shields.io/badge/Windows-11%20%C2%B7%2010-4A4540?style=flat-square&labelColor=201E1C)](#known-limits)
 [![License: GPL-3.0](https://img.shields.io/badge/license-GPL--3.0-4A4540?style=flat-square&labelColor=201E1C)](LICENSE)
 
-**[Download](https://github.com/nixesty/pebbly/releases/latest)** &nbsp;·&nbsp;
+**[Download](https://github.com/AhmedAyman22/pebbly/releases/latest)** &nbsp;·&nbsp;
 [pebbly.bar](https://pebbly.bar) &nbsp;·&nbsp;
 [Türkçe](README.md)
 
@@ -20,6 +20,21 @@ A small pill for Windows 11 and 10, inspired by Samsung One UI's Now Bar.
 <img src="assets/readme/en/hero.png" width="880" alt="The playing song's pill in the taskbar with the music card open above it; beside it the Claude Code, match, timer, Galaxy Buds, weather and charging pills">
 
 </div>
+
+> [!NOTE]
+> **This is a modified version of [Pebbly](https://github.com/nixesty/pebbly) by [nixesty](https://github.com/nixesty).**
+> All credit for the original app goes to them. This fork is maintained by
+> [AhmedAyman22](https://github.com/AhmedAyman22) and is not affiliated with or endorsed by the
+> original author. Please report bugs in this version here, not upstream.
+>
+> Changes in this fork (since November 2026):
+> - The pill floats at the top centre of the screen, like a Dynamic Island, and drops down when the cursor rests at the top edge
+> - Clicking a media or Claude Code card brings that app's window to the front
+> - Spotify's shuffle and repeat buttons work, through Spotify's Web API (repeat one included)
+> - A wider, shorter media card
+>
+> Updates for this version come from [this fork's releases](https://github.com/AhmedAyman22/pebbly/releases).
+
 
 <br>
 
@@ -100,7 +115,7 @@ language is in General → Language (Windows' language by default).
 
 <img src="assets/readme/en/setup.png" width="440" align="right" alt="The setup window">
 
-1. Download `pebbly-setup.exe` from the [latest release](https://github.com/nixesty/pebbly/releases/latest).
+1. Download `pebbly-setup.exe` from the [latest release](https://github.com/AhmedAyman22/pebbly/releases/latest).
 2. Run it. It needs no admin rights and installs to `%LOCALAPPDATA%\Programs\Pebbly` (**Change**
    picks another folder).
 3. The options: **Start with Windows**, **Connect to Claude Code** (shown when Claude Code is on
@@ -315,7 +330,8 @@ Pebbly. Every release needs them.
 
 Pebbly is licensed under the [GNU General Public License version 3](LICENSE) (GPL-3.0): you may
 use, change and share the code; if you share a changed version, you have to publish its source
-under the same license. Copyright © 2026 nixesty.
+under the same license. Copyright © 2026 nixesty. Changes in this fork: Copyright © 2026
+AhmedAyman22, under the same license.
 
 Not covered by this license:
 
