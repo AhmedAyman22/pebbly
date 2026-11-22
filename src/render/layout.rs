@@ -112,12 +112,13 @@ pub fn pill_fit(bar_h: i32, h_dip: f32, s: &Scale, factor: f32) -> f32 {
 pub fn card_rect(bar: &TaskbarInfo, center_x: i32, w_dip: f32, h_dip: f32, gap_dip: f32, s: &Scale) -> RectPx {
     let w = s.even_px(w_dip) as i32;
     let h = s.px(h_dip) as i32;
-    let bottom = bar.rect.y - s.px(gap_dip) as i32;
+    // Above the bar at the bottom; below it at the top (top mode's pill strip).
+    let y = if bar.bottom { bar.rect.y - s.px(gap_dip) as i32 - h } else { bar.rect.bottom() + s.px(gap_dip) as i32 };
     // Centred on the pill, but never off the taskbar's monitor (a pill at the far left: icons
     // centred with Widgets off, or a large offset).
     let margin = s.px(8.0) as i32;
     let x = (center_x - w / 2).min(bar.rect.x + bar.rect.w - margin - w).max(bar.rect.x + margin);
-    RectPx { x, y: bottom - h, w, h }
+    RectPx { x, y, w, h }
 }
 
 /// The card window's left edge for a `w` px wide window centred on `center_x`, kept on the

@@ -354,6 +354,7 @@ extern "system" fn pill_input_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM)
             // A press that became a shelf drag ends inside OLE's loop, which takes this release;
             // on any other pill a sloppy click is still a click.
             PILL_PRESS.with(|p| p.set(None));
+            crate::platform::log::log("pill: click");
             pill(PillEvent::Click { x: x_of(lp) })
         }
         WM_MBUTTONUP => pill(PillEvent::MiddleClick),
@@ -363,6 +364,7 @@ extern "system" fn pill_input_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM)
         WM_MOUSEHWHEEL => pill(PillEvent::Wheel(wheel_of(wp), true)),
         WM_MOUSEMOVE => {
             if track_enter(hwnd, &HOVER_PILL) {
+                crate::platform::log::log("pill: hover");
                 push_event(UiEvent::Pill(PillEvent::Hover(true)));
             }
             let held = wp.0 & windows::Win32::System::SystemServices::MK_LBUTTON.0 as usize != 0;
@@ -573,6 +575,16 @@ fn create(class: PCWSTR, ex: WINDOW_EX_STYLE, r: RectPx) -> Result<HWND> {
     }
 }
 
+/// The window under screen point `p` and its class name (diagnostics).
+pub fn window_at(p: windows::Win32::Foundation::POINT) -> (HWND, String) {
+    unsafe {
+        let hwnd = WindowFromPoint(p);
+        let mut buf = [0u16; 128];
+        let n = GetClassNameW(hwnd, &mut buf).max(0) as usize;
+        (hwnd, String::from_utf16_lossy(&buf[..n]))
+    }
+}
+
 /// Rounded hit region so only the pill or card itself takes the mouse.
 pub fn set_hit_region(hwnd: HWND, w: i32, h: i32, radius_px: i32) {
     unsafe {
@@ -607,6 +619,40 @@ pub struct PillWindow {
     placed: std::cell::Cell<Option<(RectPx, i32)>>,
     stage_x: std::cell::Cell<Option<f32>>,
     visible: std::cell::Cell<Option<bool>>,
+    /// Top mode: bumped on each show, so a hide's late "now hide the window" is dropped.
+    generation: std::sync::Arc<std::sync::atomic::AtomicU32>,
+}
+
+/// Top mode's show and hide: the spring's length and the hide's (ms), and the size the pill
+/// grows from and shrinks back to (x, y), anchored at the screen's top edge.
+const DROP_MS: f32 = 450.0;
+const LIFT_MS: f32 = 350.0;
+const CLOSED_SCALE: (f32, f32) = (0.6, 0.5);
+
+/// A spring's step response (SwiftUI's `response` gives omega = TAU / response): 0 at t = 0,
+/// settling at 1. Damping 1 or more is critically damped (no overshoot).
+fn spring_k(t: f32, omega: f32, zeta: f32) -> f32 {
+    if zeta >= 1.0 {
+        return 1.0 - (1.0 + omega * t) * (-omega * t).exp();
+    }
+    let root = (1.0 - zeta * zeta).sqrt();
+    let wd = omega * root;
+    1.0 - (-zeta * omega * t).exp() * ((wd * t).cos() + zeta / root * (wd * t).sin())
+}
+
+/// A scalar animation springing from wherever the property is to `target` over `dur_ms`.
+fn spring_anim(c: &windows::UI::Composition::Compositor, target: f32, dur_ms: f32, omega: f32, zeta: f32) -> Result<windows::UI::Composition::ScalarKeyFrameAnimation> {
+    use crate::render::motion::scaled_ticks;
+    let linear = c.CreateLinearEasingFunction()?;
+    let anim = c.CreateScalarKeyFrameAnimation()?;
+    for i in 1..=GLIDE_FRAMES {
+        let p = i as f32 / GLIDE_FRAMES as f32;
+        let k = if i == GLIDE_FRAMES { 1.0 } else { spring_k(p * dur_ms / 1000.0, omega, zeta) };
+        let expr = format!("this.StartingValue+({target}-this.StartingValue)*{k}");
+        anim.InsertExpressionKeyFrameWithEasingFunction(p, &windows::core::HSTRING::from(expr), &linear)?;
+    }
+    anim.SetDuration(windows::Foundation::TimeSpan { Duration: scaled_ticks(dur_ms) })?;
+    Ok(anim)
 }
 
 impl PillWindow {
@@ -614,17 +660,19 @@ impl PillWindow {
     /// `frame_w` the pill frame's width, in screen pixels. The window never moves: the pill
     /// glides inside it, which a moving child window can't do smoothly.
     pub fn create(g: &Gfx, bar: HWND, lane: RectPx, frame_w: i32) -> Result<Self> {
-        let ex = WS_EX_NOREDIRECTIONBITMAP | WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW;
+        // Top mode: topmost from the start, as the card's windows are.
+        let top = if crate::app::PILL_AT_TOP { WS_EX_TOPMOST } else { WINDOW_EX_STYLE(0) };
+        let ex = WS_EX_NOREDIRECTIONBITMAP | WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW | top;
         let hwnd = create(PASSIVE_CLASS, ex, lane)?;
         unsafe { SetLayeredWindowAttributes(hwnd, COLORREF(0), 255, LWA_ALPHA)? };
-        taskbar::embed(hwnd, bar, lane)?;
+        if crate::app::PILL_AT_TOP { taskbar::float(hwnd, lane)?; } else { taskbar::embed(hwnd, bar, lane)?; }
         let (target, root) = composition_target(g, hwnd, lane)?;
         let stage = g.compositor.CreateContainerVisual()?;
         stage.SetSize(windows_numerics::Vector2 { X: frame_w as f32, Y: lane.h as f32 })?;
         root.Children()?.InsertAtTop(&stage)?;
 
-        let input = create(PILL_INPUT_CLASS, WS_EX_LAYERED | WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW, lane)?;
-        taskbar::embed(input, bar, lane)?;
+        let input = create(PILL_INPUT_CLASS, WS_EX_LAYERED | WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW | top, lane)?;
+        if crate::app::PILL_AT_TOP { taskbar::float(input, lane)?; } else { taskbar::embed(input, bar, lane)?; }
         // Alpha 1: invisible but still hit-testable. Set after embedding; set before, a layered
         // child keeps an opaque (black) surface.
         unsafe { SetLayeredWindowAttributes(input, COLORREF(0), 1, LWA_ALPHA)? };
@@ -633,7 +681,8 @@ impl PillWindow {
             let _ = ShowWindow(input, SW_SHOWNOACTIVATE);
         }
         let (placed, stage_x, visible) = Default::default();
-        Ok(PillWindow { hwnd, input, target, root, stage, bar, lane, placed, stage_x, visible })
+        let generation = Default::default();
+        Ok(PillWindow { hwnd, input, target, root, stage, bar, lane, placed, stage_x, visible, generation })
     }
 
     /// Puts the input window on `pill` and centres the pill's frame (`frame_w` wide) on it; with
@@ -683,10 +732,101 @@ impl PillWindow {
         if self.visible.replace(Some(visible)) == Some(visible) {
             return;
         }
+        if crate::app::PILL_AT_TOP {
+            let done = if visible { self.drop_in() } else { self.lift_out() };
+            if let Err(e) = done {
+                crate::platform::log::log(&format!("pill: animation failed ({e:?})"));
+            }
+            return;
+        }
         let cmd = if visible { SW_SHOWNOACTIVATE } else { SW_HIDE };
         unsafe {
             let _ = ShowWindow(self.hwnd, cmd);
             let _ = ShowWindow(self.input, cmd);
+        }
+    }
+
+    /// Top mode's show, as Boring Notch opens: the pill grows out of the screen's top edge on a
+    /// slightly bouncy spring (response 0.42 s, damping 0.8), then settles.
+    fn drop_in(&self) -> Result<()> {
+        use crate::render::motion::scaled_ticks;
+        use windows_numerics::Vector3;
+        self.generation.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+        let st = &self.stage;
+        let size = st.Size()?;
+        st.StopAnimation(h!("Offset.Y"))?;
+        st.StopAnimation(h!("Scale.X"))?;
+        st.StopAnimation(h!("Scale.Y"))?;
+        st.StopAnimation(h!("Opacity"))?;
+        // The anchor is the screen's top edge, so the pill emerges from it.
+        st.SetCenterPoint(Vector3 { X: size.X / 2.0, Y: 0.0, Z: 0.0 })?;
+        let o = st.Offset()?;
+        st.SetOffset(Vector3 { X: o.X, Y: 0.0, Z: 0.0 })?;
+        st.SetScale(Vector3 { X: CLOSED_SCALE.0, Y: CLOSED_SCALE.1, Z: 1.0 })?;
+        st.SetOpacity(0.0)?;
+        unsafe {
+            let _ = ShowWindow(self.hwnd, SW_SHOWNOACTIVATE);
+            let _ = ShowWindow(self.input, SW_SHOWNOACTIVATE);
+        }
+        self.raise();
+        let c = st.Compositor()?;
+        let (omega, zeta) = (std::f32::consts::TAU / 0.42, 0.8);
+        st.StartAnimation(h!("Scale.X"), &spring_anim(&c, 1.0, DROP_MS, omega, zeta)?)?;
+        st.StartAnimation(h!("Scale.Y"), &spring_anim(&c, 1.0, DROP_MS, omega, zeta)?)?;
+        let fade = c.CreateScalarKeyFrameAnimation()?;
+        fade.InsertKeyFrame(1.0, 1.0)?;
+        fade.SetDuration(windows::Foundation::TimeSpan { Duration: scaled_ticks(120.0) })?;
+        st.StartAnimation(h!("Opacity"), &fade)
+    }
+
+    /// Top mode's hide, as Boring Notch closes: back into the top edge on a critically damped
+    /// spring (response 0.45 s, no bounce). The windows hide once it's gone (unless shown again
+    /// meanwhile). Clicks stop at once.
+    fn lift_out(&self) -> Result<()> {
+        use crate::render::motion::scaled_ticks;
+        use windows_numerics::Vector3;
+        unsafe {
+            let _ = ShowWindow(self.input, SW_HIDE);
+        }
+        let st = &self.stage;
+        let size = st.Size()?;
+        st.SetCenterPoint(Vector3 { X: size.X / 2.0, Y: 0.0, Z: 0.0 })?;
+        let c = st.Compositor()?;
+        let batch = c.CreateScopedBatch(windows::UI::Composition::CompositionBatchTypes::Animation)?;
+        let (omega, zeta) = (std::f32::consts::TAU / 0.45, 1.0);
+        st.StartAnimation(h!("Scale.X"), &spring_anim(&c, CLOSED_SCALE.0, LIFT_MS, omega, zeta)?)?;
+        st.StartAnimation(h!("Scale.Y"), &spring_anim(&c, CLOSED_SCALE.1, LIFT_MS, omega, zeta)?)?;
+        let fade = c.CreateScalarKeyFrameAnimation()?;
+        fade.InsertKeyFrame(1.0, 0.0)?;
+        fade.SetDuration(windows::Foundation::TimeSpan { Duration: scaled_ticks(LIFT_MS * 0.8) })?;
+        st.StartAnimation(h!("Opacity"), &fade)?;
+        batch.End()?;
+        let (hwnd, generation) = (self.hwnd.0 as isize, self.generation.clone());
+        let at = generation.load(std::sync::atomic::Ordering::Acquire);
+        batch.Completed(&windows::Foundation::TypedEventHandler::new(move |_, _| {
+            if generation.load(std::sync::atomic::Ordering::Acquire) == at {
+                unsafe {
+                    let _ = ShowWindow(HWND(hwnd as *mut _), SW_HIDE);
+                }
+            }
+            Ok(())
+        }))?;
+        Ok(())
+    }
+
+    /// Top mode: back above every other window (another app's title bar can end up over the
+    /// floating pill and take its clicks). The click-through composition window stays on top
+    /// of the input window, as `place` keeps them.
+    pub fn raise(&self) {
+        let flags = SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE;
+        unsafe {
+            let _ = SetWindowPos(self.input, Some(HWND_TOPMOST), 0, 0, 0, 0, flags);
+            let _ = SetWindowPos(self.hwnd, Some(HWND_TOPMOST), 0, 0, 0, 0, flags);
+        }
+        // ponytail: diagnostic; delete once the pill takes clicks over every app.
+        let topmost = unsafe { GetWindowLongPtrW(self.input, GWL_EXSTYLE) } as u32 & WS_EX_TOPMOST.0 != 0;
+        if !topmost {
+            crate::platform::log::log("pill: raised but not topmost");
         }
     }
 
@@ -751,6 +891,11 @@ impl CardWindow {
         unsafe {
             let flags = SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW;
             let _ = SetWindowPos(self.hwnd, Some(HWND_TOPMOST), 0, 0, 0, 0, flags);
+        }
+        // ponytail: diagnostic; delete once the pill takes clicks over every app.
+        let topmost = unsafe { GetWindowLongPtrW(self.input, GWL_EXSTYLE) } as u32 & WS_EX_TOPMOST.0 != 0;
+        if !topmost {
+            crate::platform::log::log("pill: raised but not topmost");
         }
     }
 
