@@ -9,7 +9,7 @@ use serde_json::Value;
 
 /// "owner/name" of the repository whose releases are the updates (asked without a token: it
 /// answers once the repository is public); empty: none asked.
-pub const REPO: &str = "nixesty/pebbly";
+pub const REPO: &str = "AhmedAyman22/pebbly";
 
 /// The files a release must carry: the two exes and their checksums.
 pub const ASSETS: [&str; 3] = ["pebbly.exe", "pebbly-settings.exe", "SHA256SUMS.txt"];
