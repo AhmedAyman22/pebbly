@@ -109,7 +109,7 @@ use crate::render::pill::{layout_for, waveform_levels, PillButton, PillContent, 
 
 /// Widest and tallest card (370 DIP; a full Now Brief, screen time included, is 566 tall); the
 /// card window is that plus shadow room and never resizes.
-const CARD_FRAME_W_DIP: f32 = 370.0;
+const CARD_FRAME_W_DIP: f32 = 400.0;
 const CARD_FRAME_H_DIP: f32 = 570.0;
 const CARD_GAP_DIP: f32 = 12.0;
 /// The pill keeps this far from the taskbar's buttons and tray.

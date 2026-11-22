@@ -196,10 +196,16 @@ impl MediaCard {
     }
 }
 
+/// The media player card: wide and short, its cover a band across the top (DIP).
+pub const MEDIA_W_DIP: f32 = 400.0;
+const MEDIA_BAND_H_DIP: f32 = 126.0;
+/// The old tall band; everything under the band sits this much less high than it used to.
+const MEDIA_BAND_TALL_DIP: f32 = 176.0;
+
 /// Width of the app name on the media card: from 42 DIP up to 8 DIP before the output chip,
-/// which ends 16 DIP from the right edge of the 340 DIP card.
+/// which ends 16 DIP from the right edge of the card.
 pub fn media_app_name_width_dip(chip_w_dip: Option<f32>) -> f32 {
-    let right = 340.0 - 16.0 - chip_w_dip.map_or(0.0, |w| w + 8.0);
+    let right = MEDIA_W_DIP - 16.0 - chip_w_dip.map_or(0.0, |w| w + 8.0);
     (right - 42.0).max(0.0)
 }
 
@@ -791,7 +797,11 @@ pub fn card_size_dip(c: &CardContent) -> (f32, f32) {
             (370.0, APP_BODY_TOP + text + if a.progress.is_some() { 14.0 } else { 0.0 } + 14.0 + 34.0 + 12.0)
         }
         CardContent::Picker(_) => (370.0, 260.0),
-        CardContent::Media(_) => (340.0, 350.0),
+        CardContent::Media(t) => match t.page {
+            MediaPage::Player => (MEDIA_W_DIP, 350.0 - (MEDIA_BAND_TALL_DIP - MEDIA_BAND_H_DIP)),
+            // The output list keeps its own, narrower layout.
+            MediaPage::Output(_) => (340.0, 350.0),
+        },
         CardContent::Buds(c) => (370.0, buds::buds_height_dip(c)),
         CardContent::Weather(w) if w.alert.is_some() => (370.0, 196.0 + WEATHER_ALERT_ROW),
         CardContent::Weather(_) => (370.0, 196.0),
@@ -2283,11 +2293,13 @@ impl Painter<'_, '_> {
         let p = 1.0 - (1.0 - view.progress.clamp(0.0, 1.0)).powi(3);
         // The places, top to bottom: gone above, before, on, next, coming from below.
         // (top, height, size, alpha, bright)
+        // The line on air takes what the band leaves between its neighbours (two lines of 18).
+        let on_air = (band.bottom - band.top) - d(68.0);
         let places: [(f32, f32, f32, f32, bool); 5] = [
-            (band.top + d(14.0), d(22.0), d(13.5), 0.0, false),
-            (band.top + d(46.0), d(22.0), d(13.5), 0.45, false),
-            (band.top + d(70.0), d(66.0), d(18.0), 1.0, true),
-            (band.bottom - d(36.0), d(22.0), d(13.5), 0.45, false),
+            (band.top + d(4.0), d(22.0), d(13.5), 0.0, false),
+            (band.top + d(8.0), d(22.0), d(13.5), 0.45, false),
+            (band.top + d(34.0), on_air, d(18.0), 1.0, true),
+            (band.bottom - d(32.0), d(22.0), d(13.5), 0.45, false),
             (band.bottom - d(4.0), d(22.0), d(13.5), 0.0, false),
         ];
         let lerp = |a: f32, b: f32| a + (b - a) * p;
@@ -2315,11 +2327,15 @@ impl Painter<'_, '_> {
         let d = |v: f32| v * self.s.0;
         let [ar, ag, ab] = m.accent;
         // Cover band with the title over a scrim.
-        let band = rect(d(12.0), d(12.0), d(316.0), d(176.0));
+        let (w_dip, bh) = (self.w / self.s.0, MEDIA_BAND_H_DIP);
+        let bw = w_dip - 24.0;
+        // What sits under the band moved up by this much when the band got shorter.
+        let k = MEDIA_BAND_TALL_DIP - bh;
+        let band = rect(d(12.0), d(12.0), d(bw), d(bh));
         match &m.art {
             Some(art) => {
                 let (aw, ah) = (m.art_size.0 as f32, m.art_size.1 as f32);
-                let src_h = aw * 176.0 / 316.0;
+                let src_h = aw * bh / bw;
                 let src = D2D_RECT_F { left: 0.0, top: (ah - src_h) / 2.0, right: aw, bottom: (ah + src_h) / 2.0 };
                 self.ink.image_rounded(art, m.art_size, src, band, d(24.0))?;
             }
@@ -2327,14 +2343,14 @@ impl Painter<'_, '_> {
                 self.ink.vgradient(band, d(24.0), rgba(ar, ag, ab, 0.55), rgba(ar, ag, ab, 0.2))?;
                 let initial: String = m.app_name.chars().take(1).collect();
                 let st = TextStyle::new(Face::Display, Weight::Bold, d(64.0), white(0.35)).centered();
-                self.ink.text(&initial, rect(d(12.0), d(12.0), d(316.0), d(130.0)), &st)?;
+                self.ink.text(&initial, rect(d(12.0), d(12.0), d(bw), d(bh - 30.0)), &st)?;
             }
         }
         let lyrics = card.lyrics.as_ref().filter(|_| card.show_lyrics);
         if let Some(view) = lyrics {
             self.lyrics(band, view)?;
         } else {
-            let scrim = rect(d(12.0), d(12.0 + 176.0 - 96.0), d(316.0), d(96.0));
+            let scrim = rect(d(12.0), d(12.0 + bh - 84.0), d(bw), d(84.0));
             self.ink.vgradient(scrim, d(24.0), [0.0, 0.0, 0.0, 0.0], [0.0, 0.0, 0.0, 0.55])?;
         }
         // The pin, across from the lyrics chip: pinned, the card stays open.
@@ -2367,15 +2383,15 @@ impl Painter<'_, '_> {
         }
         let title = TextStyle::new(Face::Text, Weight::SemiBold, d(18.0), white(1.0)).ellipsis();
         if lyrics.is_none() {
-            self.ink.text(&m.title, rect(d(28.0), d(12.0 + 176.0 - 58.0), d(284.0), d(26.0)), &title)?;
+            self.ink.text(&m.title, rect(d(28.0), d(12.0 + bh - 58.0), d(bw - 32.0), d(26.0)), &title)?;
         }
         if !m.artist.is_empty() && lyrics.is_none() {
             let artist = TextStyle::new(Face::Text, Weight::Regular, d(14.0), white(0.75)).ellipsis();
-            self.ink.text(&m.artist, rect(d(28.0), d(12.0 + 176.0 - 33.0), d(284.0), d(20.0)), &artist)?;
+            self.ink.text(&m.artist, rect(d(28.0), d(12.0 + bh - 33.0), d(bw - 32.0), d(20.0)), &artist)?;
         }
 
         // App badge and output chip.
-        let badge = rect(d(16.0), d(204.0), d(20.0), d(20.0));
+        let badge = rect(d(16.0), d(204.0 - k), d(20.0), d(20.0));
         let app = crate::activities::media::app_accent(&m.app_id);
         self.ink.rrect(badge, d(10.0), rgba(app[0], app[1], app[2], 1.0))?;
         let initial: String = m.app_name.chars().take(1).collect();
@@ -2387,10 +2403,10 @@ impl Painter<'_, '_> {
         };
         let name_w = d(media_app_name_width_dip(chip_text_w.map(|w| w / self.s.0 + 44.0)));
         let app_name = TextStyle::new(Face::Text, Weight::Regular, d(12.5), white(0.85)).ellipsis();
-        self.ink.text(&m.app_name, rect(d(42.0), d(200.0), name_w, d(28.0)), &app_name)?;
+        self.ink.text(&m.app_name, rect(d(42.0), d(200.0 - k), name_w, d(28.0)), &app_name)?;
         if let (Some(output), Some(text_w)) = (&card.output, chip_text_w) {
             let chip_w = text_w + d(44.0);
-            let chip = rect(self.w - d(16.0) - chip_w, d(200.0), chip_w, d(28.0));
+            let chip = rect(self.w - d(16.0) - chip_w, d(200.0 - k), chip_w, d(28.0));
             self.ink.rrect(chip, d(14.0), white(0.14))?;
             let icon = if output.to_lowercase().contains("hoparl") { Icon::Speaker } else { Icon::Headphones };
             let glyph_st = TextStyle::new(Face::Icons, Weight::Regular, d(14.0), white(1.0)).centered();
@@ -2400,7 +2416,7 @@ impl Painter<'_, '_> {
         }
 
         // Wave seek bar, coloured by the cover; flat while there is no timeline (live streams).
-        let (x0, x1, y) = (d(16.0), self.w - d(16.0), d(244.0));
+        let (x0, x1, y) = (d(16.0), self.w - d(16.0), d(244.0 - k));
         let timeline = m.timeline.filter(|t| t.end > t.start);
         match (timeline, card.position) {
             (Some(t), Some(position)) => {
@@ -2417,10 +2433,10 @@ impl Painter<'_, '_> {
                 self.ink.rrect(rect(xp - d(6.0), y - d(6.0), d(12.0), d(12.0)), d(6.0), white(1.0))?;
                 let shown = card.seeking.map_or(position, |f| t.start + (duration * f) as i64);
                 let times = TextStyle::new(Face::Text, Weight::Regular, d(12.0), white(0.7)).tabular();
-                self.ink.text(&format_media_time(shown - t.start), rect(x0, d(256.0), d(80.0), d(18.0)), &times)?;
-                self.ink.text(&format_media_time(t.end - t.start), rect(x1 - d(80.0), d(256.0), d(80.0), d(18.0)), &times.trailing())?;
+                self.ink.text(&format_media_time(shown - t.start), rect(x0, d(256.0 - k), d(80.0), d(18.0)), &times)?;
+                self.ink.text(&format_media_time(t.end - t.start), rect(x1 - d(80.0), d(256.0 - k), d(80.0), d(18.0)), &times.trailing())?;
                 if m.can.seek {
-                    *self.seek = Some((rect(x0 - d(8.0), d(228.0), x1 - x0 + d(16.0), d(32.0)), x0, x1));
+                    *self.seek = Some((rect(x0 - d(8.0), d(228.0 - k), x1 - x0 + d(16.0), d(32.0)), x0, x1));
                 }
             }
             _ => {
@@ -2429,12 +2445,13 @@ impl Painter<'_, '_> {
         }
 
         // Transport row.
-        let cy = d(306.0);
+        let cy = d(306.0 - k);
+        let mid = w_dip / 2.0;
         let enabled = |on: bool| if on { 1.0 } else { 0.35 };
         for (x, icon, on, action) in [
-            (104.0, Icon::Prev, m.can.prev, CardAction::Prev),
-            (170.0, if m.playing { Icon::Pause } else { Icon::Play }, m.can.play_pause, CardAction::PlayPause),
-            (236.0, Icon::Next, m.can.next, CardAction::Next),
+            (mid - 66.0, Icon::Prev, m.can.prev, CardAction::Prev),
+            (mid, if m.playing { Icon::Pause } else { Icon::Play }, m.can.play_pause, CardAction::PlayPause),
+            (mid + 66.0, Icon::Next, m.can.next, CardAction::Next),
         ] {
             let area = rect(d(x - 25.0), cy - d(25.0), d(50.0), d(50.0));
             self.ink.rrect(area, d(25.0), white(0.14))?;
@@ -2444,7 +2461,7 @@ impl Painter<'_, '_> {
         }
         for (x, icon, supported, active, action) in [
             (32.0, Icon::Shuffle, m.can.shuffle, m.shuffle == Some(true), CardAction::Shuffle),
-            (308.0, Icon::Repeat, m.can.repeat, m.repeat == Some(true), CardAction::Repeat),
+            (w_dip - 32.0, Icon::Repeat, m.can.repeat, m.repeat == Some(true), CardAction::Repeat),
         ] {
             let area = rect(d(x - 20.0), cy - d(20.0), d(40.0), d(40.0));
             let tint = if !supported {
@@ -2778,11 +2795,11 @@ mod tests {
 
     #[test]
     fn media_app_name_stops_before_the_output_chip() {
-        // The name starts at 42 DIP; the chip ends 16 DIP from the right of the 340 DIP card.
+        // The name starts at 42 DIP; the chip ends 16 DIP from the right of the 400 DIP card.
         let chip_w = 194.0;
-        assert_eq!(media_app_name_width_dip(Some(chip_w)), 80.0);
-        assert!(42.0 + media_app_name_width_dip(Some(chip_w)) + 8.0 <= 340.0 - 16.0 - chip_w);
-        assert_eq!(media_app_name_width_dip(None), 282.0);
+        assert_eq!(media_app_name_width_dip(Some(chip_w)), 140.0);
+        assert!(42.0 + media_app_name_width_dip(Some(chip_w)) + 8.0 <= MEDIA_W_DIP - 16.0 - chip_w);
+        assert_eq!(media_app_name_width_dip(None), 342.0);
     }
 
     #[test]
