@@ -298,25 +298,88 @@ pub fn wheel_step(p: &[Presence], now_ms: u64, front: ActivityKind, delta: i32) 
     next_front(&stack_order(p, now_ms, None), front, delta)
 }
 
-/// A swipe ends after this long without wheel events (touchpad inertia included).
-pub const SWIPE_QUIET_MS: u64 = 300;
+/// A gesture ends after this long without wheel events. Measured on a touchpad: events inside
+/// one swipe (finger, then inertia) come at most ~45 ms apart; separate swipes are further.
+pub const SWIPE_QUIET_MS: u64 = 60;
+/// A delta under this ends a swipe's inertia tail; one over `SWIPE_START` right after it is a
+/// new swipe, even without a gap. (The jump from the finger's deltas to the inertia's first
+/// big one is not: the finger's deltas aren't tiny.)
+const SWIPE_TAIL_END: i32 = 12;
+const SWIPE_START: i32 = 40;
 
-/// Turns wheel deltas into one step per gesture: a mouse notch (120) steps at once, touchpad
-/// deltas add up to 120, and the rest of that gesture (with its inertia) is swallowed.
+/// The inertia's events come about every 16 ms, the finger's every 4–8 ms. Inertia events
+/// followed by finger events mean the finger is back: a new swipe, though the old one still
+/// coasts. (A swipe itself goes finger, then inertia, never the other way round.)
+const INERTIA_GAP_MS: u64 = 12;
+const FINGER_GAP_MS: u64 = 9;
+
+/// Turns wheel deltas into one step per gesture, however long it runs: a mouse notch (120)
+/// steps at once, touchpad deltas add up to 120, and the rest of the gesture is swallowed. A
+/// new gesture starts after a gap, after a tail's end, when the finger comes back during the
+/// inertia, or on a turn the other way. A touchpad throws one stray opposite delta where the
+/// finger hands over to the inertia, so a turn needs two in a row. A gesture keeps to one
+/// axis (sideways wins), so a swipe's vertical wobble can't restart it.
 #[derive(Default)]
 pub struct Swipe {
     acc: i32,
     last_ms: u64,
+    last_gap: u64,
+    last_abs: i32,
+    /// The way of the last event that wasn't tail noise.
+    dir: i32,
+    horizontal: bool,
     stepped: bool,
+    /// A big delta against `dir`, held back until the next event shows if it was a stray.
+    against: Option<i32>,
 }
 
 impl Swipe {
-    pub fn push(&mut self, delta: i32, now_ms: u64) -> Option<i32> {
-        if now_ms.saturating_sub(self.last_ms) >= SWIPE_QUIET_MS {
-            self.acc = 0;
-            self.stepped = false;
+    pub fn push(&mut self, delta: i32, horizontal: bool, now_ms: u64) -> Option<i32> {
+        let mut gap = now_ms.saturating_sub(self.last_ms);
+        if gap >= SWIPE_QUIET_MS {
+            *self = Swipe { horizontal, ..Swipe::default() };
+            // The pause before a swipe isn't the cadence of anything in it.
+            gap = 0;
+        } else if horizontal != self.horizontal {
+            // The other axis is a wobble, unless a sideways swipe is just starting.
+            if !horizontal || self.stepped {
+                return None;
+            }
+            *self = Swipe { horizontal, ..Swipe::default() };
+            gap = 0;
+        }
+        let abs = delta.abs();
+        let big = abs >= SWIPE_START;
+        let mut fresh = big && (self.last_abs < SWIPE_TAIL_END || (gap <= FINGER_GAP_MS && self.last_gap >= INERTIA_GAP_MS));
+        let mut carry = 0;
+        if big && self.dir != 0 && delta.signum() != self.dir {
+            match self.against.take() {
+                // Maybe a stray: wait for the next event (the timing still counts).
+                None => {
+                    self.against = Some(delta);
+                    self.last_ms = now_ms;
+                    self.last_gap = gap;
+                    return None;
+                }
+                // Two in a row: a real turn, and the first one counts too.
+                Some(first) => {
+                    fresh = true;
+                    carry = first;
+                }
+            }
+        } else {
+            self.against = None;
         }
         self.last_ms = now_ms;
+        self.last_gap = gap;
+        self.last_abs = abs;
+        if abs >= SWIPE_TAIL_END {
+            self.dir = delta.signum();
+        }
+        if fresh {
+            self.acc = carry;
+            self.stepped = false;
+        }
         if self.stepped {
             return None;
         }
@@ -4325,11 +4388,15 @@ impl App {
                 self.refresh()
             }
             UiEvent::Timer(TIMER_MEDIA_EXPIRY) | UiEvent::Timer(TIMER_MATCH) | UiEvent::Timer(TIMER_LIVE_EXPIRY) => self.refresh(),
-            UiEvent::Pill(PillEvent::Wheel(_)) if !settings::current().wheel_switches_activity => Ok(()),
-            UiEvent::Pill(PillEvent::Wheel(delta)) => match self.swipe.push(delta, now_ms()) {
-                Some(step) => self.step_front(step),
-                None => Ok(()),
-            },
+            UiEvent::Pill(PillEvent::Wheel(..)) if !settings::current().wheel_switches_activity => Ok(()),
+            UiEvent::Pill(PillEvent::Wheel(delta, horizontal)) => {
+                let step = self.swipe.push(delta, horizontal, now_ms());
+                log(&format!("wheel: {delta} {} -> {step:?}", if horizontal { "h" } else { "v" })); // ponytail: diagnostic, delete once the swipe feels right
+                match step {
+                    Some(step) => self.step_front(step),
+                    None => Ok(()),
+                }
+            }
             // A right-click on the pill opens the settings of what it shows; the tray keeps the menu.
             UiEvent::Pill(PillEvent::RightClick) => {
                 open_settings_at(self.front_kind().map(settings_page_for));
@@ -4520,7 +4587,7 @@ impl App {
                 self.question_scroll = (at < overflow - 0.5).then_some(at.max(0.0));
                 self.refresh()
             }
-            UiEvent::Card(CardEvent::Wheel { x, y, delta }) => {
+            UiEvent::Card(CardEvent::Wheel { x, y, delta, horizontal }) => {
                 if let (Some(OpenCard::Picker), Some(CardAction::PickerField(field))) = (self.open, self.ui.card.hit_test(x, y)) {
                     let notches = if delta.abs() >= 120 { delta / 120 } else { delta.signum() };
                     self.picker.wheel(field, notches);
@@ -4545,7 +4612,9 @@ impl App {
                 if !settings::current().wheel_switches_activity {
                     return Ok(());
                 }
-                match (self.open, self.swipe.push(delta, now_ms())) {
+                let step = self.swipe.push(delta, horizontal, now_ms());
+                log(&format!("wheel (card): {delta} {} -> {step:?}", if horizontal { "h" } else { "v" })); // ponytail: diagnostic, delete with the pill's
+                match (self.open, step) {
                     (Some(OpenCard::Activity(_)), Some(step)) => self.step_front(step),
                     _ => Ok(()),
                 }
@@ -4758,21 +4827,107 @@ mod tests {
     #[test]
     fn swipe_mouse_notch_steps_at_once() {
         let mut s = Swipe::default();
-        assert_eq!(s.push(120, 1_000), Some(1));
-        assert_eq!(s.push(-120, 2_000), Some(-1));
+        assert_eq!(s.push(120, false, 1_000), Some(1));
+        assert_eq!(s.push(-120, false, 2_000), Some(-1));
     }
 
     #[test]
     fn swipe_touchpad_deltas_add_up_to_one_step() {
         let mut s = Swipe::default();
-        assert_eq!(s.push(40, 1_000), None);
-        assert_eq!(s.push(40, 1_010), None);
-        assert_eq!(s.push(40, 1_020), Some(1));
-        // The rest of the gesture and its inertia don't step again...
-        for t in (1_030..1_600).step_by(10) {
-            assert_eq!(s.push(40, t), None);
+        assert_eq!(s.push(40, true, 1_000), None);
+        assert_eq!(s.push(40, true, 1_010), None);
+        assert_eq!(s.push(40, true, 1_020), Some(1));
+        // The rest of the gesture doesn't step again, however long it runs.
+        for t in (1_030..1_500).step_by(20) {
+            assert_eq!(s.push(40, true, t), None);
         }
-        // ...but a new gesture after a pause does.
-        assert_eq!(s.push(-120, 1_590 + SWIPE_QUIET_MS), Some(-1));
+    }
+
+    /// Three swipes as a real touchpad sent them (time ms, delta): each is the finger's
+    /// ~4 ms-apart events, then the inertia's bigger ones every ~16 ms, then a tail that dies
+    /// away. Each must be exactly one step, in its own direction.
+    #[test]
+    fn swipe_real_touchpad_swipes_are_one_step_each() {
+        let left = [(10246, -162), (10263, -141), (10279, -110), (10296, -112), (10314, -89), (10330, -60), (10348, -56), (10367, -49), (10381, -25), (10397, -21), (10414, -14), (10431, -7), (10445, -4)];
+        let right_a = [
+            (10671, 416), (10679, 53), (10683, 81), (10687, 92), (10692, 67), (10696, 91), (10700, 92), (10704, 99), (10710, 95), (10712, 109), (10717, 78),
+            (10740, 250), (10756, 332), (10772, 314), (10796, 445), (10813, 296), (10829, 250), (10845, 219), (10862, 194), (10877, 173), (10893, 145), (10908, 134),
+            (10929, 155), (10948, 106), (10965, 77), (10980, 60), (10995, 50), (11011, 42), (11028, 32), (11032, 7), (11048, 17), (11081, 18), (11096, 4),
+        ];
+        let right_b = [
+            (11509, 345), (11518, 50), (11522, 70), (11526, 88), (11530, 67), (11534, 96), (11538, 98), (11543, 142), (11547, 91), (11565, 138),
+            (11579, 328), (11599, 384), (11615, 343), (11633, 367), (11649, 271), (11665, 279), (11683, 271), (11697, 191), (11716, 243), (11732, 163), (11746, 144),
+            (11762, 134), (11778, 117), (11782, 28), (11798, 85), (11815, 84), (11831, 64), (11846, 53), (11862, 42), (11878, 32), (11897, 25), (11915, 17), (11929, 7), (11945, 4),
+        ];
+        let mut s = Swipe::default();
+        for (name, swipe, want) in [("left", &left[..], -1), ("right", &right_a[..], 1), ("right again", &right_b[..], 1)] {
+            let steps: Vec<i32> = swipe.iter().filter_map(|&(t, d)| s.push(d, true, t)).collect();
+            assert_eq!(steps, vec![want], "{name}");
+        }
+    }
+
+    #[test]
+    fn swipe_a_big_delta_after_a_tail_end_is_a_new_swipe() {
+        let mut s = Swipe::default();
+        assert_eq!(s.push(200, true, 1_000), Some(1));
+        for (i, d) in [150, 90, 40, 12, 5, 3].iter().enumerate() {
+            assert_eq!(s.push(*d, true, 1_010 + 10 * i as u64), None);
+        }
+        // 30 ms after the tail died, no real gap yet: still a new swipe.
+        assert_eq!(s.push(200, true, 1_100), Some(1));
+        // But the tail's own wobble isn't one.
+        assert_eq!(s.push(8, true, 1_110), None);
+        assert_eq!(s.push(20, true, 1_120), None);
+    }
+
+    #[test]
+    fn swipe_vertical_wobble_does_not_restart_a_sideways_swipe() {
+        let mut s = Swipe::default();
+        // A stray vertical event first doesn't hold the swipe back...
+        assert_eq!(s.push(-6, false, 1_000), None);
+        assert_eq!(s.push(40, true, 1_005), None);
+        assert_eq!(s.push(40, true, 1_010), None);
+        assert_eq!(s.push(40, true, 1_020), Some(1));
+        // ...and the wobble after the step neither turns it back nor steps again.
+        for (i, d) in [-30, 25, -20, 30, -25, 20].iter().enumerate() {
+            assert_eq!(s.push(*d, false, 1_030 + 10 * i as u64), None);
+        }
+        assert_eq!(s.push(30, true, 1_070), None, "the same swipe's tail");
+    }
+
+    #[test]
+    fn swipe_turning_back_steps_at_once() {
+        let mut s = Swipe::default();
+        assert_eq!(s.push(120, true, 1_000), Some(1));
+        assert_eq!(s.push(-120, true, 1_040), None, "one against could be a stray");
+        assert_eq!(s.push(-120, true, 1_050), Some(-1), "two in a row are a turn");
+        assert_eq!(s.push(-120, true, 1_100), None, "and its own tail is dropped");
+    }
+
+    /// Four swipes as a real touchpad sent them (time ms, delta). Two have a stray big
+    /// opposite delta where the finger hands over to the inertia; one starts while the last
+    /// swipe still coasts (finger events right after 16 ms-apart inertia ones). Each must be one
+    /// step to the right, and no step to the left.
+    #[test]
+    fn swipe_real_two_finger_swipes_with_strays_are_one_step_each() {
+        let before = [(6122, 243), (6139, 226), (6154, 169), (6170, 152), (6186, 127), (6202, 102), (6218, 78), (6234, 63), (6250, 43)];
+        let x = [
+            (6256, 261), (6261, 151), (6270, 71), (6274, 102), (6278, 120), (6283, 95), (6287, 127), (6291, 106), (6295, 152), (6299, 144), (6303, 131), (6307, 131), (6311, 105),
+            (6319, -358), (6324, 136), (6328, 138), (6345, 395), (6361, 473), (6377, 455), (6392, 416), (6407, 402), (6423, 441), (6438, 377), (6451, 290), (6470, 465),
+            (6486, 336), (6502, 342), (6518, 349), (6534, 314), (6550, 296), (6567, 283), (6583, 261), (6598, 232), (6615, 209), (6631, 179), (6647, 163), (6662, 130),
+            (6678, 124), (6694, 109), (6711, 95), (6726, 78), (6742, 60), (6757, 53), (6773, 39), (6789, 28), (6805, 21), (6821, 14), (6837, 7), (6853, 4), (6869, 3),
+        ];
+        let y = [
+            (6960, 321), (6964, 91), (6967, 74), (6972, 110), (6976, 84), (6980, 124), (6984, 95), (6988, 134), (6992, 138), (6996, 123), (7001, 134), (7009, -426), (7013, 137),
+            (7017, 141), (7043, 706), (7059, 497), (7075, 483), (7091, 470), (7106, 455), (7122, 412), (7138, 427), (7171, 829), (7186, 360), (7202, 388), (7218, 332),
+            (7234, 335), (7250, 324), (7266, 311), (7282, 293), (7298, 278), (7314, 244), (7330, 222), (7346, 198), (7362, 176), (7379, 155), (7394, 138), (7410, 120),
+            (7426, 102), (7442, 88), (7458, 71), (7473, 56), (7490, 46), (7506, 35), (7521, 25), (7537, 21), (7554, 11), (7570, 7), (7586, 3),
+        ];
+        let z = [(7826, 74), (7830, 17), (7834, 21), (7838, 29), (7845, 17), (7846, 28), (7850, 25), (7854, 25), (7858, 25), (7905, 120), (7920, 63), (7937, 53), (7952, 39), (7969, 28), (7984, 21), (8000, 14), (8017, 7), (8033, 4)];
+        let mut s = Swipe::default();
+        for (name, swipe) in [("before", &before[..]), ("x (starts during the coasting)", &x[..]), ("y", &y[..]), ("z (a small one)", &z[..])] {
+            let steps: Vec<i32> = swipe.iter().filter_map(|&(t, d)| s.push(d, true, t)).collect();
+            assert_eq!(steps, vec![1], "{name}");
+        }
     }
 }
