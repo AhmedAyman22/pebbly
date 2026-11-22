@@ -53,6 +53,18 @@ use crate::activities::wellbeing::{compare_text, limit_text, local_day, weekday}
 use crate::activities::wellbeing_worker::{WellbeingBox, WellbeingMailbox};
 use crate::activities::island::{island_wants, on_island, ISLAND_MS};
 use crate::render::island::Island;
+/// The pill sits at the top centre of the screen, like the Dynamic Island, not in the taskbar.
+/// ponytail: the taskbar pill code stays, unused while this is true; delete it once this settles.
+pub const PILL_AT_TOP: bool = true;
+/// The pill's margin from the top edge of the screen, in DIP.
+const TOP_MARGIN_DIP: f32 = 6.0;
+/// How often the cursor is checked for the top-centre zone that shows the pill (ms).
+const TOP_HOVER_MS: u32 = 120;
+const TIMER_TOP_HOVER: usize = 20;
+/// How long the cursor rests against the top edge before the pill comes down (ms).
+const TOP_DWELL_MS: u64 = 500;
+/// Top mode's pill is this much bigger than the taskbar's (it floats on its own, so it can be).
+const TOP_PILL_GROW: f32 = 1.2;
 use crate::activities::capture::{size_text, CAPTURE_MOMENT_MS};
 use crate::activities::away::{self, AwayItem, AwayKind, AwayLog, AwayReport, AWAY_MOMENT_MS};
 use crate::activities::music::{self, plays_text, week_caption, Listening, MusicLog};
@@ -103,7 +115,7 @@ use crate::render::card::{
 };
 use crate::render::morph::PAGE_OUT_MS;
 use crate::render::gfx::{is_device_lost, Gfx};
-use crate::render::layout::{card_rect, fit_pill, frame_x, lerp_rect, pill_fit, pill_rect, RectPx, Scale, TaskbarInfo};
+use crate::render::layout::{card_rect, fit_pill, frame_x, lerp_rect, pill_fit, pill_rect, RectPx, Scale, TaskbarAlign, TaskbarInfo};
 use crate::render::morph::{Morph, SHADOW_BLUR_DIP, SHADOW_DY_DIP};
 use crate::render::motion::{speed_factor, spring_at, SPRING_DURATION_S};
 use crate::render::pill::{layout_for, waveform_levels, PillButton, PillContent, PillLayout, PillVisual, MAX_SLIVERS, PILL_H_DIP, SLIVER_STEP_DIP};
@@ -629,7 +641,10 @@ fn open_settings_at(page: Option<u8>) {
 /// those change; the activities (a running timer, ...) live in `App` and survive.
 struct Ui {
     bar: HWND,
+    /// Where the pill and cards lay out: the taskbar, or in top mode the pill's strip at the top.
     info: TaskbarInfo,
+    /// The taskbar itself, to tell when it changed.
+    real: TaskbarInfo,
     /// The taskbar's DPI scale; the pill and the cards draw at it times their size setting.
     scale: Scale,
     pill_scale: Scale,
@@ -650,11 +665,21 @@ impl Ui {
     fn build(gfx: &Gfx) -> Result<Ui> {
         let bar = taskbar::find_taskbar()
             .ok_or_else(|| windows::core::Error::new(windows::Win32::Foundation::E_FAIL, "taskbar not found"))?;
-        let info = taskbar::taskbar_info(bar)?;
+        let real = taskbar::taskbar_info(bar)?;
+        let monitor = monitor_of(bar).unwrap_or(real.rect);
         let scale = Scale::from_dpi(unsafe { GetDpiForWindow(bar) });
         let s = settings::current();
         // A low taskbar (Windows 10's, lower still with small buttons) takes a smaller pill.
-        let pill_scale = Scale(scale.0 * pill_fit(info.rect.h, PILL_H_DIP, &scale, pill_size_factor(s.pill_size)));
+        let top_grow = if PILL_AT_TOP { TOP_PILL_GROW } else { 1.0 };
+        let pill_scale = Scale(scale.0 * pill_fit(real.rect.h, PILL_H_DIP, &scale, pill_size_factor(s.pill_size)) * top_grow);
+        // Top mode: the pill lays out in a strip along the top edge of the monitor, as tall as
+        // the pill plus its margins, centred like the taskbar's pill. `real` stays the taskbar.
+        let info = if PILL_AT_TOP {
+            let margin = pill_scale.px(TOP_MARGIN_DIP) as i32;
+            TaskbarInfo { rect: RectPx { x: monitor.x, y: monitor.y, w: monitor.w, h: pill_scale.px(PILL_H_DIP) as i32 + 2 * margin }, align: TaskbarAlign::Left, widgets: false, bottom: false }
+        } else {
+            real
+        };
         let card_scale = Scale(scale.0 * if s.card_size == CardSize::Compact { 0.88 } else { 1.0 });
         let placeholder = PillContent::Timer { text: String::new(), label: "", paused: false };
         let pill_r = App::pill_home(&info, &pill_scale, placeholder.width_dip());
@@ -678,7 +703,8 @@ impl Ui {
             scale,
             pill_scale,
             card_scale,
-            monitor: monitor_of(bar).unwrap_or(info.rect),
+            real,
+            monitor,
             pill_window,
             pill,
             pill_layout: layout_for(&placeholder, &pill_scale),
@@ -693,7 +719,7 @@ impl Ui {
     fn still_valid(&self) -> bool {
         taskbar::find_taskbar() == Some(self.bar)
             && taskbar::taskbar_info(self.bar).is_ok_and(|i| {
-                i.rect == self.info.rect && i.align == self.info.align && i.widgets == self.info.widgets && i.bottom == self.info.bottom
+                i.rect == self.real.rect && i.align == self.real.align && i.widgets == self.real.widgets && i.bottom == self.real.bottom
             })
             && Scale::from_dpi(unsafe { GetDpiForWindow(self.bar) }) == self.scale
     }
@@ -723,6 +749,10 @@ pub struct App {
     /// (ms): the pill, or the card before a switch.
     card_from: (RectPx, f32, u64),
     pill_hover: bool,
+    /// Top mode: the cursor is at the top centre (or on the pill), so the pill shows.
+    pill_revealed: bool,
+    /// Top mode: since when the cursor has rested against the top edge.
+    top_dwell: Option<u64>,
     card_hover: bool,
     timer: Option<TimerSlot>,
     stopwatch: Option<StopwatchSlot>,
@@ -1030,6 +1060,8 @@ impl App {
             card_screen: RectPx { x: 0, y: 0, w: 0, h: 0 },
             card_from: (RectPx { x: 0, y: 0, w: 0, h: 0 }, 0.0, 0),
             pill_hover: false,
+            pill_revealed: false,
+            top_dwell: None,
             card_hover: false,
             timer: None,
             stopwatch: None,
@@ -1181,6 +1213,9 @@ impl App {
         // Signed in without a lock screen (or restarted): the start is the day's first look.
         app.try_auto_brief("start");
         unsafe { SetTimer(Some(app.main.hwnd), TIMER_BAR_CHECK, BAR_CHECK_MS, None) };
+        if PILL_AT_TOP {
+            unsafe { SetTimer(Some(app.main.hwnd), TIMER_TOP_HOVER, TOP_HOVER_MS, None) };
+        }
         unsafe { SetTimer(Some(app.main.hwnd), TIMER_WALLPAPER, WALLPAPER_EVERY_MS, None) };
         unsafe { SetTimer(Some(app.main.hwnd), TIMER_MUSIC, MUSIC_EVERY_MS, None) };
         app.check_wallpaper();
@@ -1296,7 +1331,9 @@ impl App {
 
     /// Where a pill `width_dip` wide sits with nothing in its way (the offset setting applied).
     fn pill_home(info: &TaskbarInfo, s: &Scale, width_dip: f32) -> RectPx {
-        pill_rect(info, width_dip, PILL_H_DIP, s, settings::current().pill_offset_dip as f32)
+        // Top mode: always dead centre, like the Dynamic Island (the offset is a taskbar setting).
+        let offset = if PILL_AT_TOP { 0.0 } else { settings::current().pill_offset_dip as f32 };
+        pill_rect(info, width_dip, PILL_H_DIP, s, offset)
     }
 
     /// The pill's rect at `width_dip`: its home, or beside the taskbar's buttons when they reach
@@ -1314,7 +1351,8 @@ impl App {
     /// Takes the latest taskbar items unless a card is out (it grows from and shrinks into the
     /// pill, which moves once it has closed). True when they changed.
     fn follow_taskbar_items(&mut self) -> bool {
-        if self.card_state != CardState::Closed {
+        // Top mode: the pill doesn't sit on the taskbar, so its buttons don't matter.
+        if PILL_AT_TOP || self.card_state != CardState::Closed {
             return false;
         }
         let items = self.items_mailbox.lock().map(|slot| slot.clone()).unwrap_or_default();
@@ -1339,8 +1377,10 @@ impl App {
         let cx = pill.x + pill.w / 2;
         let w = s.even_px(CARD_FRAME_W_DIP + 2.0 * SHADOW_BLUR_DIP) as i32;
         let tallest = card_rect(info, cx, CARD_FRAME_W_DIP, CARD_FRAME_H_DIP, CARD_GAP_DIP, s);
-        let top = tallest.y - s.px(SHADOW_BLUR_DIP) as i32;
-        RectPx { x: frame_x(info, cx, w), y: top, w, h: info.rect.bottom() - top }
+        let blur = s.px(SHADOW_BLUR_DIP) as i32;
+        // Bottom: the card rises from the strip up. Top: it drops from the strip down.
+        let (top, bottom) = if info.bottom { (tallest.y - blur, info.rect.bottom()) } else { (info.rect.y, tallest.bottom() + blur) };
+        RectPx { x: frame_x(info, cx, w), y: top, w, h: bottom - top }
     }
 
     fn pill_screen(&self) -> RectPx {
@@ -2450,7 +2490,7 @@ impl App {
         let hint = dragdrop::hover() == Some(DropZone::Pill);
         let front = if hint { Some(self.shelf_pill(true)) } else { self.stack.first().and_then(|k| self.pill_content(*k, now)) };
         let bottom = self.ui.info.bottom;
-        match front.filter(|_| bottom) {
+        match front.filter(|_| bottom || PILL_AT_TOP) {
             None => {
                 self.front = None;
                 self.ui.pill_window.set_visible(false);
@@ -2490,9 +2530,10 @@ impl App {
                 self.ui.pill.sing(sung, &self.ui.pill_scale)?;
                 let glide = self.ui.pill_window.shown();
                 self.ui.pill_window.place(pill, self.ui.pill_layout.frame_w, self.ui.pill_layout.radius, glide)?;
-                self.ui.pill_window.set_visible(!self.fullscreen);
+                let shown = !self.fullscreen && (!PILL_AT_TOP || self.pill_revealed);
+                self.ui.pill_window.set_visible(shown);
                 let why = if self.fullscreen { format!("fullscreen: {}", foreground_exe().unwrap_or_default()) } else { format!("front {:?}", self.stack.first()) };
-                self.note_pill(!self.fullscreen, &why);
+                self.note_pill(shown, &why);
                 // An open card shrinks back into the pill as it is now (a new track's colours).
                 if front_changed && self.open.is_some_and(OpenCard::grows_from_pill) && matches!(self.card_state, CardState::Opening | CardState::Open) {
                     self.ui.morph.set_pill(&self.ui.pill.look(&front, &self.ui.pill_layout))?;
@@ -4144,6 +4185,55 @@ impl App {
         !inside(self.card_screen) && !inside(self.pill_screen())
     }
 
+    /// Top mode: the pill shows while the cursor is at the top centre, or on the pill, or while a
+    /// card is open, as the taskbar's pill shows at the bottom.
+    fn top_hover(&mut self) -> Result<()> {
+        let mut p = POINT::default();
+        if unsafe { GetCursorPos(&mut p) }.is_err() {
+            return Ok(());
+        }
+        let m = self.ui.monitor;
+        let pill = self.pill_screen();
+        let inside = |r: RectPx| p.x >= r.x && p.x < r.right() && p.y >= r.y && p.y < r.bottom();
+        // The strip the cursor must reach to show the pill (the top edge above it), and the wider
+        // area round the pill that keeps it up.
+        // Only the screen's very top edge (the cursor pushed against it), so clicking an app's
+        // title bar or tabs just below doesn't bring the pill up.
+        let enter = RectPx { x: pill.x - 24, y: m.y, w: pill.w + 48, h: 2 };
+        let stay = RectPx { x: pill.x - 60, y: m.y, w: pill.w + 120, h: pill.bottom() - m.y + 60 };
+        // ponytail: diagnostic for "clicks don't reach the pill"; delete once clicks work.
+        if self.pill_revealed && inside(pill) {
+            let (under, class) = crate::platform::windows::window_at(p);
+            static LAST: std::sync::atomic::AtomicIsize = std::sync::atomic::AtomicIsize::new(0);
+            let ours = under == self.ui.pill_window.input;
+            if LAST.swap(under.0 as isize, std::sync::atomic::Ordering::Relaxed) != under.0 as isize {
+                log(&format!("pill: cursor over {class} (pill input: {ours}), pill {pill:?}"));
+            }
+            // Something sits over the pill: take the top back so the click reaches it.
+            if !ours {
+                self.ui.pill_window.raise();
+            }
+        }
+        // The cursor rests against the edge for a moment first, so passing by doesn't open it.
+        let rested = if inside(enter) {
+            if self.top_dwell.is_none() {
+                log(&format!("pill: top edge reached at ({}, {}), pill {pill:?}", p.x, p.y)); // ponytail: diagnostic, delete with the other
+            }
+            let since = *self.top_dwell.get_or_insert(now_ms());
+            now_ms().saturating_sub(since) >= TOP_DWELL_MS
+        } else {
+            self.top_dwell = None;
+            false
+        };
+        let want = rested || (self.pill_revealed && (inside(stay) || self.pill_hover || self.card_state != CardState::Closed));
+        if want != self.pill_revealed {
+            self.pill_revealed = want;
+            log(&format!("pill: reveal -> {want}")); // ponytail: diagnostic
+            self.refresh()?;
+        }
+        Ok(())
+    }
+
     fn menu(&mut self) -> Result<()> {
         let front_match = match self.front_kind() {
             Some(ActivityKind::Match(key)) => self.match_of(key).map(|m| (m.id.clone(), m.url.clone())),
@@ -4506,6 +4596,7 @@ impl App {
             }
             UiEvent::EffectsChanged => self.ui.morph.set_blur(effects_enabled()),
             UiEvent::Timer(TIMER_OUTSIDE) if !self.card_pinned && self.clicked_outside() => self.close_card(),
+            UiEvent::Timer(TIMER_TOP_HOVER) => self.top_hover(),
             UiEvent::Pill(PillEvent::Hover(over)) | UiEvent::Card(CardEvent::Hover(over)) => {
                 if matches!(e, UiEvent::Pill(_)) {
                     self.pill_hover = over;

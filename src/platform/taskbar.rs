@@ -102,15 +102,31 @@ pub fn embed(child: HWND, bar: HWND, rect: RectPx) -> Result<()> {
     place(child, bar, rect)
 }
 
-/// Moves an embedded child to `rect` (screen coordinates) and keeps it above its siblings.
+/// Takes a window off the taskbar: a floating top-level window that can sit anywhere on the
+/// screen (the top-centre pill). Its rect is in screen coordinates, as for `place`.
+pub fn float(child: HWND, rect: RectPx) -> Result<()> {
+    unsafe {
+        // Already a top-level popup (never parented): only the place and the topmost band.
+        SetWindowPos(child, Some(HWND_TOPMOST), rect.x, rect.y, rect.w, rect.h, SWP_NOACTIVATE)
+    }
+}
+
+/// Moves `child` to `rect` (screen coordinates) and keeps it above its siblings. An embedded
+/// child is placed relative to the taskbar; a floating one (see `float`) in screen coordinates.
 pub fn place(child: HWND, bar: HWND, rect: RectPx) -> Result<()> {
-    let origin = window_rect(bar)?;
+    let embedded = unsafe { GetParent(child) }.ok() == Some(bar);
+    let (ox, oy) = if embedded {
+        let origin = window_rect(bar)?;
+        (origin.x, origin.y)
+    } else {
+        (0, 0)
+    };
     unsafe {
         SetWindowPos(
             child,
-            Some(HWND_TOP),
-            rect.x - origin.x,
-            rect.y - origin.y,
+            Some(if embedded { HWND_TOP } else { HWND_TOPMOST }),
+            rect.x - ox,
+            rect.y - oy,
             rect.w,
             rect.h,
             SWP_NOACTIVATE,
