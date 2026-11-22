@@ -2209,17 +2209,30 @@ impl App {
 
     /// "Pencereye git": the window the prompt was typed in comes to the front (the click was
     /// ours, so the foreground may be handed on).
-    fn focus_claude(&self) {
-        let Some(OpenCard::Activity(ActivityKind::Live(key))) = self.open else { return };
-        let Some(w) = self.live.get(key).and_then(|i| i.info.window) else { return };
-        use windows::Win32::UI::WindowsAndMessaging::{IsIconic, SetForegroundWindow, ShowWindow, SW_RESTORE};
-        let hwnd = HWND(w as *mut _);
-        unsafe {
-            if IsIconic(hwnd).as_bool() {
-                let _ = ShowWindow(hwnd, SW_RESTORE);
+    /// False when the card has no window to go to (an app's live activity, a closed terminal).
+    fn focus_claude(&self) -> bool {
+        let Some(OpenCard::Activity(ActivityKind::Live(key))) = self.open else { return false };
+        let Some(w) = self.live.get(key).and_then(|i| i.info.window) else { return false };
+        crate::platform::app_window::bring_to_front(HWND(w as *mut _))
+    }
+
+    /// A click on an open card's empty part (no button under it): the app behind it comes to the
+    /// front (the player, Claude Code's terminal) and the card closes. False when it has none.
+    fn focus_card_app(&mut self) -> Result<bool> {
+        let focused = match self.open {
+            Some(OpenCard::Activity(ActivityKind::Media(id))) if self.output_page.is_none() => {
+                let Some(m) = self.media_of(id) else { return Ok(false) };
+                let done = crate::platform::app_window::focus_app(&m.app_id, &m.title);
+                log(&format!("media: card click, {} to the front {done}", m.app_id));
+                done
             }
-            let _ = SetForegroundWindow(hwnd);
+            Some(OpenCard::Activity(ActivityKind::Live(_))) => self.focus_claude(),
+            _ => false,
+        };
+        if focused {
+            self.close_card()?;
         }
+        Ok(focused)
     }
 
     /// The shelf's pill: the newest three, the newest one's name and the count; with `drop_hint`
@@ -2959,7 +2972,7 @@ impl App {
             CardAction::ClaudeAllow(painted) => self.answer_claude(true, painted),
             CardAction::ClaudeDeny(painted) => self.answer_claude(false, painted),
             CardAction::ClaudeFocus => {
-                self.focus_claude();
+                let _ = self.focus_claude();
                 return self.close_card();
             }
             CardAction::LiveClose => {
@@ -4695,7 +4708,7 @@ impl App {
                 }
                 match self.ui.card.hit_test(x, y) {
                     Some(action) => self.act(action),
-                    None => Ok(()),
+                    None => self.focus_card_app().map(|_| ()),
                 }
             }
             // The answer scrolls; back at its end, it follows the words again.
