@@ -262,6 +262,12 @@ fn main() -> Result<()> {
     output.page = MediaPage::Output(Box::new(OutputPage { subtitle: "YouTube Music · HEAVENLY JUMPSTYLE".into(), rows, volume, muted: false, scroll: 0 }));
     let mut player = MediaCard::new(media(accent), 0, Some("SteelSeries Sonar - Gaming".into()), None, (0, 2), None);
     player.lyrics = Some(LyricsView { before: None, prev: None, current: None, next: None, progress: 1.0 });
+    // Shuffle on and repeat on the one track: the buttons' "on" look.
+    player.m.can.shuffle = true;
+    player.m.can.repeat = true;
+    player.m.shuffle = Some(true);
+    player.m.repeat = Some(true);
+    player.repeat_one = true;
     // The lyrics view: the line before, the one on (long enough to wrap), the next.
     let mut lyrics = MediaCard::new(media(accent), 0, Some("SteelSeries Sonar - Gaming".into()), None, (0, 2), None);
     lyrics.pinned = true;

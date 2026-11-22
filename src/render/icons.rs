@@ -10,6 +10,8 @@ pub enum Icon {
     Next,
     Shuffle,
     Repeat,
+    /// Repeat with a 1 in the loop: the one track over and over.
+    RepeatOne,
     Close,
     Timer,
     Stopwatch,
@@ -58,13 +60,14 @@ pub enum Icon {
 }
 
 impl Icon {
-    pub const ALL: [Icon; 47] = [
+    pub const ALL: [Icon; 48] = [
         Icon::Play,
         Icon::Pause,
         Icon::Prev,
         Icon::Next,
         Icon::Shuffle,
         Icon::Repeat,
+        Icon::RepeatOne,
         Icon::Close,
         Icon::Timer,
         Icon::Stopwatch,
@@ -119,6 +122,7 @@ pub fn glyph(i: Icon) -> char {
         Icon::Next => '\u{F8AD}',
         Icon::Shuffle => '\u{E8B1}',
         Icon::Repeat => '\u{E8EE}',
+        Icon::RepeatOne => '\u{E8ED}',
         Icon::Close => '\u{E711}',
         Icon::Timer => '\u{E823}',
         Icon::Stopwatch => '\u{E916}',
