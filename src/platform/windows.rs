@@ -27,7 +27,8 @@ use crate::render::layout::RectPx;
 pub enum PillEvent {
     /// Left click at `x` pixels from the pill's left edge.
     Click { x: i32 },
-    Wheel(i32),
+    /// The wheel's delta, and whether it's the sideways (tilt, two-finger swipe) wheel.
+    Wheel(i32, bool),
     MiddleClick,
     RightClick,
     Hover(bool),
@@ -41,7 +42,7 @@ pub enum CardEvent {
     Down { x: i32, y: i32 },
     Move { x: i32, y: i32 },
     Up { x: i32, y: i32 },
-    Wheel { x: i32, y: i32, delta: i32 },
+    Wheel { x: i32, y: i32, delta: i32, horizontal: bool },
     Hover(bool),
 }
 
@@ -358,7 +359,8 @@ extern "system" fn pill_input_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM)
         WM_MBUTTONUP => pill(PillEvent::MiddleClick),
         WM_RBUTTONUP => pill(PillEvent::RightClick),
         // Vertical wheel, tilt wheel and touchpad two-finger swipes all move through the stack.
-        WM_MOUSEWHEEL | WM_MOUSEHWHEEL => pill(PillEvent::Wheel(wheel_of(wp))),
+        WM_MOUSEWHEEL => pill(PillEvent::Wheel(wheel_of(wp), false)),
+        WM_MOUSEHWHEEL => pill(PillEvent::Wheel(wheel_of(wp), true)),
         WM_MOUSEMOVE => {
             if track_enter(hwnd, &HOVER_PILL) {
                 push_event(UiEvent::Pill(PillEvent::Hover(true)));
@@ -413,7 +415,7 @@ extern "system" fn card_input_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM)
             unsafe {
                 let _ = windows::Win32::Graphics::Gdi::ScreenToClient(hwnd, &mut p);
             }
-            card(CardEvent::Wheel { x: p.x, y: p.y, delta: wheel_of(wp) })
+            card(CardEvent::Wheel { x: p.x, y: p.y, delta: wheel_of(wp), horizontal: msg == WM_MOUSEHWHEEL })
         }
         WM_MOUSEMOVE => {
             if track_enter(hwnd, &HOVER_CARD) {
